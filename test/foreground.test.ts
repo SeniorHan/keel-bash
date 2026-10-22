@@ -271,14 +271,79 @@ describe("a foreground bash call whose end arrives oddly", () => {
 	}
 });
 
-describe("a foreground bash call past 120 s", () => {
+describe("a foreground bash call past the promotion threshold", () => {
+	it("promotes at the call's expectedSeconds, saying how the expectation was passed", async () => {
+		const s = session();
+		let settled = false;
+		const call = s.toolCall("bash", { command: "slow-build", expectedSeconds: 10 }).finally(() => (settled = true));
+		const proc = await launched();
+		await clock.advance(9_000);
+		assert.equal(settled, false);
+		proc.write("compiling\n");
+		const result = await clock.settle(call);
+		assert.match(
+			text(result),
+			/^Command still running after 10 s, past your 10 s expectation; moved to the background as task bg-1\./,
+		);
+		assert.equal(procs.of("bg-1").pidAlive(), true);
+	});
+
+	it("treats expectedSeconds 0 as no estimate, using the default threshold", async () => {
+		const s = session();
+		const call = s.toolCall("bash", { command: "slow-build", expectedSeconds: 0 });
+		const proc = await launched();
+		await clock.advance(29_000);
+		proc.write("compiling\n");
+		assert.match(
+			text(await clock.settle(call)),
+			/^Command still running after 30 s; moved to the background as task bg-1\./,
+		);
+	});
+
+	it("prefers the call's expectation over the default when the expectation is shorter", async () => {
+		const s = session();
+		const call = s.toolCall("bash", { command: "slow-build", expectedSeconds: 2 });
+		await launched();
+		await clock.advance(2_000);
+		assert.match(text(await clock.settle(call)), /^Command still running after 2 s, past your 2 s expectation;/);
+	});
+
+	it("uses the call's expectation even when it is longer than the default", async () => {
+		const s = session();
+		let settled = false;
+		const call = s.toolCall("bash", { command: "slow-build", expectedSeconds: 600 }).finally(() => (settled = true));
+		await launched();
+		await clock.advance(599_000);
+		assert.equal(settled, false);
+		assert.match(text(await clock.settle(call)), /^Command still running after 600 s, past your 600 s expectation;/);
+	});
+
+	it("requires expectedSeconds on a foreground call", async () => {
+		const s = session();
+		await assert.rejects(
+			// The harness fills `expectedSeconds: 0`; call the tool directly to omit it.
+			s.tool("bash").execute("call-req", { command: "slow-build" } as never, undefined, undefined, s.ctx),
+			/expectedSeconds is required/,
+		);
+		assert.equal(procs.all.length, 0);
+	});
+
+	it("rejects a negative or non-finite expectedSeconds", async () => {
+		const s = session();
+		await assert.rejects(s.toolCall("bash", { command: "ls", expectedSeconds: -1 }), /Invalid expectedSeconds/);
+		await assert.rejects(
+			s.toolCall("bash", { command: "ls", expectedSeconds: Number.POSITIVE_INFINITY }),
+			/Invalid expectedSeconds/,
+		);
+	});
+
 	it("returns the task id and the output so far, and the same process keeps running", async () => {
 		const s = session();
 		const call = s.toolCall("bash", { command: "slow-build" });
 		const proc = await launched();
 		proc.write("compiling\n");
 		const result = await clock.settle(call);
-		assert.match(text(result), /^Command still running after 120 s; moved to the background as task bg-1\./);
+		assert.match(text(result), /^Command still running after 30 s; moved to the background as task bg-1\./);
 		assert.match(
 			text(result),
 			/Its completion is reported automatically and starts your next turn: if nothing else is left to do, end your turn now instead of sleeping or polling\.\n\n/,
@@ -289,22 +354,22 @@ describe("a foreground bash call past 120 s", () => {
 		assert.deepEqual(proc.signals, []);
 		assert.equal(proc.pidAlive(), true);
 		const list = text(await s.toolCall("bash_tasks", {}));
-		assert.match(list, /^bg-1 \| running \| 2m 0s \| slow-build$/);
+		assert.match(list, /^bg-1 \| running \| 30\.0s \| slow-build$/);
 		assert.equal(s.sent.length, 0);
 		assert.deepEqual(result.structuredContent, {
 			output: "compiling\n",
 			truncated: false,
-			wall_time_seconds: 120,
+			wall_time_seconds: 30,
 			task_id: "bg-1",
 		});
 	});
 
-	it("is promoted no sooner than 120 s", async () => {
+	it("is promoted no sooner than 30 s", async () => {
 		const s = session();
 		let settled = false;
 		const call = s.toolCall("bash", { command: "slow-build" }).finally(() => (settled = true));
 		await launched();
-		await clock.advance(119_000);
+		await clock.advance(29_000);
 		assert.equal(settled, false);
 		await clock.settle(call);
 	});
@@ -320,10 +385,10 @@ describe("a foreground bash call past 120 s", () => {
 		await clock.until(() => s.sent.length > 0);
 		await clock.tick(3);
 		assert.equal(s.sent.length, 1);
-		// The command ran 150 s; the poller notices it on its next 2 s tick.
+		// The command ran 60 s; the poller notices it on its next 2 s tick.
 		assert.match(
 			s.sent[0].message.content,
-			/^Background task bg-1 finished: exited \(code 3\), ran 2m 32s\.\nCommand: slow-build\nLast output:\ndone$/,
+			/^Background task bg-1 finished: exited \(code 3\), ran 1m 2s\.\nCommand: slow-build\nLast output:\ndone$/,
 		);
 		assert.deepEqual(s.sent[0].options, { deliverAs: "steer", triggerTurn: true });
 	});
@@ -353,7 +418,7 @@ describe("a foreground bash call past 120 s", () => {
 		const s = session();
 		const call = s.toolCall("bash", { command: "slow-build" });
 		const proc = await launched();
-		await clock.advance(119_000);
+		await clock.advance(29_000);
 		proc.write("late\n");
 		proc.exit(0);
 		assert.equal(text(await clock.settle(call)), "late\n");
@@ -552,7 +617,7 @@ describe("a foreground bash call that is not promoted", () => {
 		assert.equal(text(await s.toolCall("bash_tasks", {})), "No background tasks.");
 	});
 
-	it("is not promoted at 120 s when its timeout is longer", async () => {
+	it("is not promoted when its timeout is longer than the threshold", async () => {
 		const s = session();
 		let settled = false;
 		const call = s.toolCall("bash", { command: "slow-build", timeout: 300 }).finally(() => (settled = true));
@@ -610,10 +675,13 @@ describe("a foreground bash call that is not promoted", () => {
 });
 
 describe("the bash description", () => {
-	it("says a slow foreground command moves to the background after 120 s", () => {
+	it("says a slow foreground command moves to the background after 30 s", () => {
 		const tool = session().tool("bash");
 		assert.ok(tool.description.startsWith(createBashToolDefinition(root).description));
-		assert.match(tool.description, /still running after 120 s.*moves to the background/);
+		assert.match(
+			tool.description,
+			/still running past .expectedSeconds., or after 30 s with no estimate.*moves to the background/,
+		);
 	});
 });
 
@@ -696,14 +764,14 @@ describe("a foreground bash call with waitFor", () => {
 		assert.equal(text(await clock.settle(call)), 'done\n\n\n"listening on" never appeared in the output.');
 	});
 
-	it("says the text never appeared when the 120 s promotion fires first", async () => {
+	it("says the text never appeared when the timer promotion fires first", async () => {
 		const s = session();
 		const call = s.toolCall("bash", { command: "serve", waitFor: "listening on" });
 		const proc = await launched();
 		proc.write("starting\n");
 		assert.match(
 			text(await clock.settle(call)),
-			/^Command still running after 120 s; moved to the background as task bg-1\. Its completion is reported automatically and starts your next turn: if nothing else is left to do, end your turn now instead of sleeping or polling\. "listening on" never appeared in the output\.\n\nOutput so far:\nstarting\n$/,
+			/^Command still running after 30 s; moved to the background as task bg-1\. Its completion is reported automatically and starts your next turn: if nothing else is left to do, end your turn now instead of sleeping or polling\. "listening on" never appeared in the output\.\n\nOutput so far:\nstarting\n$/,
 		);
 	});
 

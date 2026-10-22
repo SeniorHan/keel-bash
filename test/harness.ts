@@ -214,9 +214,14 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		},
 		/** One registered tool's definition. */
 		tool: (name: string) => tools[name],
-		/** Call a tool the way Pi does, with this session's context. */
-		toolCall: async (name: string, params: unknown, signal?: AbortSignal): Promise<ToolResult> => {
-			const result = await tools[name].execute(`call-${++calls}`, params as never, signal, undefined, ctx);
+		/** Call a tool the way Pi does, with this session's context. Foreground calls default to `expectedSeconds: 0`, the "no estimate" value: the tests below exercise runtime behavior, and the requirement itself is covered in `foreground.test.ts`. */
+		toolCall: async (name: string, params: object, signal?: AbortSignal): Promise<ToolResult> => {
+			const given = params as Record<string, unknown>;
+			const filled =
+				name === "bash" && given.background !== true && given.expectedSeconds === undefined
+					? { expectedSeconds: 0, ...given }
+					: given;
+			const result = await tools[name].execute(`call-${++calls}`, filled as never, signal, undefined, ctx);
 			assertMatchesSchema(tools[name], result);
 			return result;
 		},

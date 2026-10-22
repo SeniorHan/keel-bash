@@ -6,6 +6,29 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+
+### Added
+
+- The `bash` tool takes `expectedSeconds`: the model's estimate of how long the
+  command will take, or `0` when it has none. A foreground call is promoted
+  once it outlasts that estimate instead of always waiting the default. Every
+  foreground call must carry it; `background: true` ignores it.
+- A promoted call that had declared an expectation says how far past it the
+  command ran (`Command still running after 45 s, past your 30 s expectation`),
+  so the model can calibrate its next estimate.
+- The default promotion threshold is configurable: `promoteMs` in the
+  project's `.pi/pi-bg-bash.json`, then the user's `~/.pi/pi-bg-bash.json`,
+  then the built-in 30 s, with `PI_BG_BASH_PROMOTE_MS` winning over all of
+  them. `config.ts` resolves it.
+
+### Changed
+
+- The default promotion threshold drops from 120 s to 30 s. An expectation in
+  `expectedSeconds` overrides it per call, in either direction.
+- The tool description and parameter tell the model about `expectedSeconds`
+  and the threshold; the promotion threshold tests move with it.
+
 ## [0.4.1] - 2026-10-19
 
 ### Fixed

@@ -1,8 +1,8 @@
 // A foreground `bash` call. Pi's own `bash` runs unchanged, over a custom
 // `exec` (its `BashOperations`) that starts the command through the same
 // detached wrapper background tasks use and feeds the log back through `onData`.
-// A command still running after 120 s, with no explicit `timeout` and not
-// starting with `sleep`, is promoted: the same live process becomes a registered
+// A command still running past its declared expectation or the default 30 s,
+// with no explicit `timeout` and not starting with `sleep`, is promoted: the same live process becomes a registered
 // task, and `exec` ends as if the command had finished, so the delegate closes
 // its own output and returns what it has. The call then answers with that output
 // and the task id. Nothing in the delegate is left pending or leaked, the turn's
@@ -19,6 +19,7 @@ import {
 	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 
+import { defaultPromoteMs } from "./config.ts";
 import { debug, debugError, taskFields } from "./debug.ts";
 import { killGroupNow } from "./kill.ts";
 import { resolveShell, SESSION_ENV_KEYS } from "./launch.ts";
@@ -27,8 +28,8 @@ import { processPort } from "./port.ts";
 import { adopt, forgetGroup, getRegistry, launchGroup, makeTask, release, reserve, type Task } from "./registry.ts";
 import { sanitize } from "./sanitize.ts";
 
-/** How long a foreground command may run before it becomes a background task. */
-export const PROMOTE_MS = 120_000;
+/** The built-in default for how long a foreground command may run before it becomes a background task; `config.ts` overrides it. */
+export const PROMOTE_MS = 30_000;
 /** Told whenever a command goes on as a task, so the model ends its turn instead of sleeping to wait. */
 export const COMPLETION_TEXT =
 	"Its completion is reported automatically and starts your next turn: if nothing else is left to do, end your turn now instead of sleeping or polling.";
@@ -65,15 +66,21 @@ function checkTimeout(timeout: number | undefined): void {
 	if (timeout * 1000 > MAX_TIMEOUT_MS) throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_MS / 1000} seconds`);
 }
 
-/** The promotion threshold; the contract test shortens it with `PI_BG_BASH_PROMOTE_MS`. */
+/** The default promotion threshold; config and the `PI_BG_BASH_PROMOTE_MS` env var override it (`config.ts`). */
 function promoteMs(): number {
-	const set = Number(process.env.PI_BG_BASH_PROMOTE_MS);
-	return Number.isFinite(set) && set > 0 ? set : PROMOTE_MS;
+	return defaultPromoteMs();
 }
 
 /** Whether auto-promotion applies: no explicit timeout, and not a deliberate wait. */
 function promotable(command: string, timeout: number | undefined): boolean {
 	return timeout === undefined && !/^\s*sleep(\s|$)/.test(command);
+}
+
+/** The promotion threshold for one call: the call's declared expectation when the model gave one, else the configured default. */
+function thresholdMs(expectedSeconds: number | undefined): number {
+	return expectedSeconds !== undefined && Number.isFinite(expectedSeconds) && expectedSeconds > 0
+		? expectedSeconds * 1000
+		: promoteMs();
 }
 
 /**
@@ -94,6 +101,8 @@ type Run = {
 	task: Task | undefined;
 	elapsedMs: number;
 	waitFor?: string;
+	/** The call's declared expectation in seconds; 0 or absent means the default threshold applies. */
+	expectedSeconds?: number;
 	matched: boolean;
 	by?: "timer" | "shortcut" | "waitFor";
 };
@@ -280,7 +289,8 @@ function operations(ctx: ExtensionContext, run: Run) {
 				}
 				getRegistry().foreground.add(handle);
 				if (timeout !== undefined) timer = setTimeout(() => stop(new Error(`timeout:${timeout}`)), timeout * 1000);
-				if (promotable(command, timeout)) promoteTimer = setTimeout(() => promote("timer"), promoteMs());
+				if (promotable(command, timeout))
+					promoteTimer = setTimeout(() => promote("timer"), thresholdMs(run.expectedSeconds));
 				if (ctx.hasUI)
 					hintTimer = setTimeout(() => {
 						try {
@@ -311,7 +321,10 @@ function retarget(text: string, piFile: string, task: Task): string {
 /** The text a promoted call answers with. */
 function promotedText(task: Task, run: Run, output: string): string {
 	const seconds = Math.round(run.elapsedMs / 100) / 10;
-	let head = `Command still running after ${seconds} s; moved to the background as task ${task.id}. `;
+	let head =
+		run.by === "timer" && run.expectedSeconds !== undefined && run.expectedSeconds > 0
+			? `Command still running after ${seconds} s, past your ${run.expectedSeconds} s expectation; moved to the background as task ${task.id}. `
+			: `Command still running after ${seconds} s; moved to the background as task ${task.id}. `;
 	if (run.matched)
 		head = `"${run.waitFor}" appeared after ${seconds} s; the command keeps running as background task ${task.id}. `;
 	// Told no reason for the move, the model tends to rerun the command or sleep again; say the user meant it.
@@ -329,14 +342,16 @@ function promotedText(task: Task, run: Run, output: string): string {
 /** Run a foreground call: Pi's `bash` over the wrapper, promoted to a task when it outlasts the threshold. */
 export async function runForeground(
 	toolCallId: string,
-	params: { command: string; timeout?: number; waitFor?: string },
+	params: { command: string; timeout?: number; waitFor?: string; expectedSeconds?: number },
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<ReturnType<typeof createBashToolDefinition>["execute"]>[3],
 	ctx: ExtensionToolContext,
 ) {
-	const { waitFor, ...piParams } = params;
+	const { waitFor, expectedSeconds, ...piParams } = params;
 	if (waitFor === "") throw new Error("waitFor must not be empty.");
-	const run: Run = { task: undefined, elapsedMs: 0, waitFor, matched: false };
+	if (expectedSeconds !== undefined && (!Number.isFinite(expectedSeconds) || expectedSeconds < 0))
+		throw new Error("Invalid expectedSeconds: must be a non-negative number of seconds");
+	const run: Run = { task: undefined, elapsedMs: 0, waitFor, expectedSeconds, matched: false };
 	const neverAppeared = `"${waitFor}" never appeared in the output.`;
 	const delegate = createBashToolDefinition(ctx.cwd, { operations: operations(ctx, run) });
 	let result: Awaited<ReturnType<typeof delegate.execute>>;

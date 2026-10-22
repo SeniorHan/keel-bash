@@ -5,13 +5,15 @@
 // the command exits the agent gets one completion message, which starts a turn
 // if the agent is idle. The footer shows `bg: N` while N tasks run. A call
 // without `background` is Pi's own `bash` over the same wrapper (`foreground.ts`),
-// and moves to the background if it outlasts 120 s.
+// and moves to the background when it outlasts the call's declared
+// `expectedSeconds`, or the default 30 s with none.
 import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TObject, Type } from "typebox";
 
 import { bgCommand } from "./bg.ts";
+import { defaultPromoteMs } from "./config.ts";
 import { rotateDebugLog } from "./debug.ts";
-import { COMPLETION_TEXT, foregroundRuns, PROMOTE_MS, runForeground } from "./foreground.ts";
+import { COMPLETION_TEXT, foregroundRuns, runForeground } from "./foreground.ts";
 import { GRACE_MS } from "./kill.ts";
 import { cleanupOldLogs } from "./logs.ts";
 import { stateText, taskData, taskLine } from "./notify.ts";
@@ -19,14 +21,16 @@ import { readOutput } from "./output.ts";
 import { attach, endSession, getRegistry, killTask, setContext, startTask } from "./registry.ts";
 import { withTaskTimer } from "./render.ts";
 
-const BACKGROUND_DESCRIPTION =
+const EXPECTED_DESCRIPTION =
 	"Set `background: true` for a command you expect to outlast a minute or two, such as a long build, a deploy or a server, " +
 	"when you have other work to do meanwhile or nothing to do until it ends. " +
 	"The call returns a task id at once; when the command exits, a message with its exit status and last lines of output arrives " +
 	"and starts a turn if you are idle, so do not sleep or poll `bash_output` to wait for it. " +
 	"To wait for something outside this machine, such as CI, background one command that blocks until it is done, " +
 	"such as `gh run watch <run-id> --exit-status` or `gh pr checks <number> --watch`, instead of running `sleep N` and a check yourself. " +
-	`A foreground command with no \`timeout\` still running after ${PROMOTE_MS / 1000} s (unless it starts with \`sleep\`) moves to the background on its own.`;
+	`Every foreground call must carry \`expectedSeconds\`: your estimate of how long the command will take, or 0 when you have no estimate. ` +
+	`A foreground command with no \`timeout\` still running past \`expectedSeconds\`, or after ${defaultPromoteMs() / 1000} s with no estimate ` +
+	"(unless it starts with `sleep`) moves to the background on its own; its completion is reported like a background call's.";
 
 // No guard for a Pi without `outputSchema`, unlike bash's: these schemas stand alone,
 // and such a Pi ignores the unknown fields.
@@ -75,9 +79,16 @@ export default function (pi: ExtensionAPI): void {
 	const builtin = createBashToolDefinition(process.cwd());
 	pi.registerTool({
 		...builtin,
-		description: `${builtin.description} ${BACKGROUND_DESCRIPTION}`,
+		description: `${builtin.description} ${EXPECTED_DESCRIPTION}`,
 		parameters: Type.Object({
 			...builtin.parameters.properties,
+			expectedSeconds: Type.Optional(
+				Type.Number({
+					description:
+						"Required: your estimate, in seconds, of how long the command will take; 0 when you have no estimate. " +
+						"A foreground call still running past this estimate moves to the background; `background: true` ignores it.",
+				}),
+			),
 			waitFor: Type.Optional(
 				Type.String({
 					description:
@@ -106,6 +117,12 @@ export default function (pi: ExtensionAPI): void {
 			setContext(ctx);
 			if (params.waitFor !== undefined && params.background)
 				throw new Error("waitFor applies to foreground calls: drop `background: true`, or drop `waitFor`.");
+			// Required from the model on foreground calls even though the schema marks it optional: the
+			// built-in's `prepareArguments` does not know this field, so a required entry here breaks its type.
+			if (!params.background && typeof params.expectedSeconds !== "number")
+				throw new Error(
+					"expectedSeconds is required: your estimate of how long the command will take, in seconds, or 0 when you have no estimate.",
+				);
 			if (!params.background) return runForeground(toolCallId, params, signal, onUpdate, ctx);
 			const startedAt = Date.now();
 			const task = await startTask(params.command, ctx, { timeout: params.timeout });

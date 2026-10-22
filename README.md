@@ -50,9 +50,10 @@ at once instead of waiting.
 
 ## What it adds
 
-- The `bash` tool keeps Pi's parameters and adds `background` and `waitFor`. Without `background` a
-  call runs in the foreground as before, and moves to the background after
-  120 s unless it has an explicit `timeout` or starts with `sleep`. Its
+- The `bash` tool keeps Pi's parameters and adds `expectedSeconds`, `background` and `waitFor`. Every foreground call
+  must carry `expectedSeconds`: the model's estimate of how long the command will take, or `0` when it has none. A call
+  moves to the background once it outlasts that estimate, or after the default 30 s without one, unless it has an
+  explicit `timeout` or starts with `sleep`. Its
   description tells the model to wait for something to finish (a CI run, a
   server coming up) with a blocking command such as `gh run watch <run-id>
   --exit-status` and `background: true`, never `sleep N` and then a check.
@@ -64,7 +65,7 @@ at once instead of waiting.
 - A codemode script's `await tools.bash(...)` resolves to Pi's bash object,
   `{ output, truncated, full_output_path?, exit_code?, wall_time_seconds, task_id? }`.
   When the command goes on as a task (`background: true`, a `waitFor` match,
-  the 120 s move or `ctrl+shift+b`), `task_id` holds its id for `bash_output`
+  the threshold move or `ctrl+shift+b`), `task_id` holds its id for `bash_output`
   or `bash_kill`, `exit_code` is absent, `output` holds the output so far (empty
   for `background: true`), and `full_output_path`, when the output was
   truncated, is the task's log.
@@ -195,15 +196,16 @@ kept, as Pi's bash keeps inherited-pipe output. A command that vanishes without 
 exit marker ends the call with `Command terminated without an exit code`, its last
 output kept.
 
-- **Promotion:** a command still running 120 s after it started, with no
-  explicit `timeout` and not starting with `sleep`, becomes a task: the same live
-  wrapper is registered (id, footer `bg: N`, `bash_tasks`, one completion
-  message, runtime counted from the start). `exec` then ends as if the command
-  had exited 0, so Pi's bash closes its output and returns; the extension
-  keeps that result's text and structured output (its `exit_code` dropped,
-  `task_id` added) and wraps the text as
-  `Command still running after 120 s; moved to the background as task <id>. ...
-  Output so far: ...`. Nothing in Pi's bash is left pending. After promotion the
+- **Promotion:** a foreground command still running past the call's `expectedSeconds` — or past the default threshold
+  (30 s) when it declared `0` or none — with no explicit `timeout` and not starting with `sleep`, becomes a task: the
+  same live wrapper is registered (id, footer `bg: N`, `bash_tasks`, one completion message, runtime counted from the
+  start). `exec` then ends as if the command had exited 0, so Pi's bash closes its output and returns; the extension
+  keeps that result's text and structured output (its `exit_code` dropped, `task_id` added) and wraps the text as
+  `Command still running after N s; moved to the background as task <id>. ...` — or, when the call declared an
+  expectation, `Command still running after N s, past your <expected> s expectation; moved to the background as task
+  <id>. ...`, which tells the model how far off its estimate was. The default threshold is the `promoteMs` of
+  `.pi/pi-bg-bash.json` in the project, then the user's `~/.pi/pi-bg-bash.json`, then 30 s, then whatever
+  `PI_BG_BASH_PROMOTE_MS` is set to, in that order. Nothing in Pi's bash is left pending. After promotion the
   turn's abort signal no longer reaches the process and no output flows to the
   finished call. A command that ends in the same instant ends normally.
   The task's `bash_output` continues after the output the promoted call showed
@@ -218,17 +220,17 @@ output kept.
   as background task <id>. ... Output so far: ...`. An explicit `timeout` then
   becomes the task's deadline (`startedAt` plus `timeout`, as for
   `background: true`); until a match it still kills the foreground call at the
-  `timeout`. If the call ends without a match (the command exits, the 120 s
+  `timeout`. If the call ends without a match (the command exits, the threshold
   promotion or `ctrl+shift+b` fires, or it fails), the result also says
   `"<text>" never appeared in the output.`. `waitFor` with `background: true`
   and an empty `waitFor` are tool errors before anything starts. A match sends
   no message of its own; the completion message comes when the task ends. An
   escape sequence split across two reads is not stripped before matching.
 - **Not promoted:** a command with any explicit `timeout` (killed at it) or one
-  starting with `sleep`. `PI_BG_BASH_PROMOTE_MS` shortens the threshold, for the
-  contract test.
+  starting with `sleep`. The default threshold and `PI_BG_BASH_PROMOTE_MS` (the
+  contract test's override) are covered under Promotion.
 - **Shortcut:** `ctrl+shift+b` moves the running foreground command to the
-  background at once, without waiting the 120 s. It applies to any command,
+  background at once, without waiting for the threshold. It applies to any command,
   including `sleep` and ones with an explicit `timeout`. The call answers
   `The user pressed ctrl+shift+b after N s: this command was deliberately
   moved to the background as task <id>, so you are not blocked on it. Do not
@@ -248,7 +250,7 @@ output kept.
   getters throwing is ignored, and the call still ends.
 - The one promotion path is
   `promote()` on each entry of `foregroundRuns()` (`foreground.ts`), the set of
-  foreground calls in flight; the 120 s timer and the shortcut both call it.
+  foreground calls in flight; the threshold timer and the shortcut both call it.
 
 ## Debug log
 
