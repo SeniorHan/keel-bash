@@ -197,9 +197,9 @@ exit marker ends the call with `Command terminated without an exit code`, its la
 output kept.
 
 - **Promotion:** a foreground command still running past the call's `expectedSeconds` — or past the default threshold
-  (30 s) when it declared `0` or none — with no explicit `timeout` and not starting with `sleep`, becomes a task: the
-  same live wrapper is registered (id, footer `bg: N`, `bash_tasks`, one completion message, runtime counted from the
-  start). `exec` then ends as if the command had exited 0, so Pi's bash closes its output and returns; the extension
+  (30 s) when it declared `0` — becomes a task, unless it starts with `sleep` or its explicit `timeout` is at or below
+  the expectation: the same live wrapper is registered (id, footer `bg: N`, `bash_tasks`, one completion message,
+  runtime counted from the start), and `exec` then ends as if the command had exited 0, so Pi's bash closes its output and returns; the extension
   keeps that result's text and structured output (its `exit_code` dropped, `task_id` added) and wraps the text as
   `Command still running after N s; moved to the background as task <id>. ...` — or, when the call declared an
   expectation, `Command still running after N s, past your <expected> s expectation; moved to the background as task
@@ -226,7 +226,7 @@ output kept.
   and an empty `waitFor` are tool errors before anything starts. A match sends
   no message of its own; the completion message comes when the task ends. An
   escape sequence split across two reads is not stripped before matching.
-- **Not promoted:** a command with any explicit `timeout` (killed at it) or one
+- **Not promoted:** a command whose explicit `timeout` is at or below its `expectedSeconds` (killed at it) or one
   starting with `sleep`. The default threshold and `PI_BG_BASH_PROMOTE_MS` (the
   contract test's override) are covered under Promotion.
 - **Shortcut:** `ctrl+shift+b` moves the running foreground command to the

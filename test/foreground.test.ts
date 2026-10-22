@@ -318,6 +318,34 @@ describe("a foreground bash call past the promotion threshold", () => {
 		assert.match(text(await clock.settle(call)), /^Command still running after 600 s, past your 600 s expectation;/);
 	});
 
+	it("promotes at the call's expectedSeconds when a longer timeout is set, and keeps the deadline", async () => {
+		const s = session();
+		const call = s.toolCall("bash", { command: "slow-build", expectedSeconds: 2, timeout: 30 });
+		const proc = await launched();
+		await clock.advance(2_000);
+		assert.match(text(await clock.settle(call)), /^Command still running after 2 s, past your 2 s expectation;/);
+		const task = [...getRegistry().tasks.values()][0];
+		assert.equal(task.deadline, task.startedAt + 30_000);
+		// The deadline kill still lands after the promotion.
+		await clock.advance(30_000);
+		await clock.until(() => s.sent.length > 0);
+		assert.match(s.sent[0].message.content, /killed|timed out/);
+		assert.equal(proc.groupAlive(), false);
+	});
+
+	it("is not promoted when the timeout is at or below the estimate", async () => {
+		const s = session();
+		const call = s
+			.toolCall("bash", { command: "slow-build", expectedSeconds: 30, timeout: 30 })
+			.catch((error: Error) => error);
+		await launched();
+		await clock.advance(35_000);
+		const outcome = await clock.settle(call);
+		assert.ok(outcome instanceof Error); // killed at the timeout, never promoted
+		assert.match(outcome.message, /timed out after 30 seconds/);
+		assert.equal(text(await s.toolCall("bash_tasks", {})), "No background tasks.");
+	});
+
 	it("requires expectedSeconds on a foreground call", async () => {
 		const s = session();
 		await assert.rejects(

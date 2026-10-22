@@ -30,7 +30,9 @@ const EXPECTED_DESCRIPTION =
 	"such as `gh run watch <run-id> --exit-status` or `gh pr checks <number> --watch`, instead of running `sleep N` and a check yourself. " +
 	`Every foreground call must carry \`expectedSeconds\`: your estimate of how long the command will take, or 0 when you have no estimate. ` +
 	`A foreground command with no \`timeout\` still running past \`expectedSeconds\`, or after ${defaultPromoteMs() / 1000} s with no estimate ` +
-	"(unless it starts with `sleep`) moves to the background on its own; its completion is reported like a background call's.";
+	"(unless it starts with `sleep`) moves to the background on its own; its completion is reported like a background call's. " +
+	"Do not set `timeout` just because you have an estimate: `expectedSeconds` already moves the call to the background at it. " +
+	"`timeout` is a hard limit: the call is killed at it, and only promoted before it when `expectedSeconds` is sooner, with the task keeping that deadline.";
 
 // No guard for a Pi without `outputSchema`, unlike bash's: these schemas stand alone,
 // and such a Pi ignores the unknown fields.

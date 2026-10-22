@@ -71,9 +71,11 @@ function promoteMs(): number {
 	return defaultPromoteMs();
 }
 
-/** Whether auto-promotion applies: no explicit timeout, and not a deliberate wait. */
-function promotable(command: string, timeout: number | undefined): boolean {
-	return timeout === undefined && !/^\s*sleep(\s|$)/.test(command);
+/** Whether auto-promotion applies: not a deliberate wait, and no `timeout` at or below the estimate — with an explicit `timeout`, only an `expectedSeconds` sooner than it promotes, and the task then inherits the deadline. */
+function promotable(command: string, timeout: number | undefined, expectedSeconds: number | undefined): boolean {
+	if (/^\s*sleep(\s|$)/.test(command)) return false;
+	if (timeout === undefined) return true;
+	return expectedSeconds !== undefined && expectedSeconds > 0 && expectedSeconds < timeout;
 }
 
 /** The promotion threshold for one call: the call's declared expectation when the model gave one, else the configured default. */
@@ -281,15 +283,15 @@ function operations(ctx: ExtensionContext, run: Run) {
 						task.readPosition = position;
 						run.elapsedMs = Date.now() - startedAt;
 						run.by = by;
-						// With `waitFor`, an explicit `timeout` becomes the task's deadline, as for `background: true`.
-						if (run.waitFor !== undefined && timeout !== undefined) task.deadline = startedAt + timeout * 1000;
+						// An explicit `timeout` stays the task's deadline after a promotion (as after a `waitFor` match): the estimate only moved the call to the background sooner.
+						if (timeout !== undefined) task.deadline = startedAt + timeout * 1000;
 						run.task = adopt(task);
 						resolve({ exitCode: 0 });
 					});
 				}
 				getRegistry().foreground.add(handle);
 				if (timeout !== undefined) timer = setTimeout(() => stop(new Error(`timeout:${timeout}`)), timeout * 1000);
-				if (promotable(command, timeout))
+				if (promotable(command, timeout, run.expectedSeconds))
 					promoteTimer = setTimeout(() => promote("timer"), thresholdMs(run.expectedSeconds));
 				if (ctx.hasUI)
 					hintTimer = setTimeout(() => {
