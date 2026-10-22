@@ -706,10 +706,7 @@ describe("the bash description", () => {
 	it("says a slow foreground command moves to the background after 30 s", () => {
 		const tool = session().tool("bash");
 		assert.ok(tool.description.startsWith(createBashToolDefinition(root).description));
-		assert.match(
-			tool.description,
-			/still running past .expectedSeconds., or after 30 s with no estimate.*moves to the background/,
-		);
+		assert.match(tool.description, /超 expectedSeconds\(无预期则 30 s,sleep 开头除外\)自动转后台/);
 	});
 });
 

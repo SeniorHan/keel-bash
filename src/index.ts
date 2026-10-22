@@ -21,18 +21,15 @@ import { readOutput } from "./output.ts";
 import { attach, endSession, getRegistry, killTask, setContext, startTask } from "./registry.ts";
 import { withTaskTimer } from "./render.ts";
 
+// Telegraphic Chinese per the naming spec's language policy: draft EN and ZH, keep the shorter.
 const EXPECTED_DESCRIPTION =
-	"Set `background: true` for a command you expect to outlast a minute or two, such as a long build, a deploy or a server, " +
-	"when you have other work to do meanwhile or nothing to do until it ends. " +
-	"The call returns a task id at once; when the command exits, a message with its exit status and last lines of output arrives " +
-	"and starts a turn if you are idle, so do not sleep or poll `bash_output` to wait for it. " +
-	"To wait for something outside this machine, such as CI, background one command that blocks until it is done, " +
-	"such as `gh run watch <run-id> --exit-status` or `gh pr checks <number> --watch`, instead of running `sleep N` and a check yourself. " +
-	`Every foreground call must carry \`expectedSeconds\`: your estimate of how long the command will take, or 0 when you have no estimate. ` +
-	`A foreground command with no \`timeout\` still running past \`expectedSeconds\`, or after ${defaultPromoteMs() / 1000} s with no estimate ` +
-	"(unless it starts with `sleep`) moves to the background on its own; its completion is reported like a background call's. " +
-	"Do not set `timeout` just because you have an estimate: `expectedSeconds` already moves the call to the background at it. " +
-	"`timeout` is a hard limit: the call is killed at it, and only promoted before it when `expectedSeconds` is sooner, with the task keeping that deadline.";
+	"长任务(构建/部署/服务)设 `background: true`:立即返回 task_id,结束时送达完成通知并开新回合,勿 sleep 或轮询 bash_output 等待。" +
+	"等外部事件(如 CI)时后台一条阻塞命令(如 `gh run watch <run-id> --exit-status`),勿 sleep N 后自查。" +
+	"前台必填 expectedSeconds;`background: true` 时忽略。" +
+	`无 timeout 的前台命令超 expectedSeconds(无预期则 ${defaultPromoteMs() / 1000} s,sleep 开头除外)自动转后台,完成照常通知。` +
+	"勿仅为记录预期设 timeout。" +
+	"timeout 是硬杀线:到点杀进程;仅当 expectedSeconds 更早才提前转后台,task 保留该 deadline。" +
+	"waitFor 命中即返回已有输出,命令转后台任务继续运行,此时 timeout 限制 task。";
 
 // No guard for a Pi without `outputSchema`, unlike bash's: these schemas stand alone,
 // and such a Pi ignores the unknown fields.
@@ -84,19 +81,8 @@ export default function (pi: ExtensionAPI): void {
 		description: `${builtin.description} ${EXPECTED_DESCRIPTION}`,
 		parameters: Type.Object({
 			...builtin.parameters.properties,
-			expectedSeconds: Type.Optional(
-				Type.Number({
-					description:
-						"Required: your estimate, in seconds, of how long the command will take; 0 when you have no estimate. " +
-						"A foreground call still running past this estimate moves to the background; `background: true` ignores it.",
-				}),
-			),
-			waitFor: Type.Optional(
-				Type.String({
-					description:
-						'Text to wait for in the output, such as "listening on" for a server. When it appears the call returns the output so far and the command keeps running as a background task. A `timeout` then limits the task, not the call.',
-				}),
-			),
+			expectedSeconds: Type.Optional(Type.Number({ description: "预计耗时,秒;0=无预期" })),
+			waitFor: Type.Optional(Type.String({ description: '输出中等待出现的文本,如 "listening on"' })),
 			background: Type.Optional(
 				Type.Boolean({ description: "Run the command as a detached background task and return its id" }),
 			),
@@ -150,11 +136,8 @@ export default function (pi: ExtensionAPI): void {
 		name: "bash_output",
 		label: "bash_output",
 		description:
-			"Read the output of a background bash task from where you last stopped, capped like `bash`. " +
-			"Each call returns only output you have not read yet and says how much remains. " +
-			"`latest: true` skips to the newest unread output. `filter` is a regex that keeps only matching lines. " +
-			"The result also says whether the task is running or has exited. " +
-			"Do not call it again and again to wait for the task to end: its completion is reported automatically.",
+			"从上次停点起读取后台任务输出,上限同 `bash`。每次调用只返回尚未读取的输出,并注明剩余量;结果同时说明任务在运行或已结束。" +
+			"勿为等待任务结束而反复调用:完成会自动送达。",
 		parameters: Type.Object({
 			id: Type.String({ description: "The task id returned by a background bash call" }),
 			latest: Type.Optional(Type.Boolean({ description: "Skip to the end of the log and return the newest output" })),
@@ -180,9 +163,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "bash_tasks",
 		label: "bash_tasks",
-		description:
-			"List every background bash task of this session with its id, command, state, runtime, " +
-			"and exit code or reason. States: running, exited, killed, exit unknown.",
+		description: "列出本会话的全部后台任务,含已结束的。",
 		parameters: Type.Object({}),
 		outputSchema: Type.Object({ tasks: Type.Array(Type.Object(TASK_FIELDS)) }),
 		annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

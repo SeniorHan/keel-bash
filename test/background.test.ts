@@ -148,12 +148,9 @@ describe("the bash tool's schema", () => {
 		const tool = session().tool("bash");
 		const builtin = createBashToolDefinition(root);
 		assert.ok(tool.description.startsWith(builtin.description));
-		assert.match(tool.description, /Set `background: true` for a command you expect to outlast a minute or two/);
-		assert.match(tool.description, /so do not sleep or poll `bash_output` to wait for it/);
-		assert.match(
-			tool.description,
-			/`gh run watch <run-id> --exit-status`.*instead of running `sleep N` and a check yourself/,
-		);
+		assert.match(tool.description, /长任务\(构建\/部署\/服务\)设 `background: true`/);
+		assert.match(tool.description, /勿 sleep 或轮询 bash_output 等待/);
+		assert.match(tool.description, /`gh run watch <run-id> --exit-status`.*勿 sleep N 后自查/);
 		assert.doesNotMatch(tool.description.slice(builtin.description.length), /until [^;]*; do sleep/);
 		const properties = Object.keys((tool.parameters as { properties: object }).properties);
 		assert.deepEqual(properties.sort(), ["background", "command", "expectedSeconds", "timeout", "waitFor"]);
