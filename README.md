@@ -1,4 +1,7 @@
-# pi-bg-bash
+# keel-bash
+
+> Fork of [gvanderclay/pi-bg-bash](https://github.com/gvanderclay/pi-bg-bash) (v0.4.1)
+> with the `expectedSeconds` safety redesign. Maintained at [SeniorHan/keel-bash](https://github.com/SeniorHan/keel-bash).
 
 A Pi extension that lets the model run shell commands in the background. It
 replaces Pi's `bash` tool with the same tool plus a `background` flag: a call
