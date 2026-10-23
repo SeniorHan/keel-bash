@@ -563,6 +563,22 @@ describe("the active foreground runs", () => {
 		assert.equal(proc.pidAlive(), true);
 	});
 
+	it("answers a user-interrupt promotion with the reply-to-the-user reason", async () => {
+		const s = session();
+		const call = s.toolCall("bash", { command: "slow-build" });
+		const proc = await launched();
+		proc.write("so far\n");
+		await clock.advance(3000);
+		[...foregroundRuns()][0].promote("userInput");
+		const result = await clock.settle(call);
+		assert.match(
+			text(result),
+			/^You sent a message while this command was still running after 3 s, so it moved to the background as task bg-1 to free this turn: reply to the user first; completion is reported automatically\./,
+		);
+		assert.equal(foregroundRuns().size, 0);
+		assert.equal(proc.pidAlive(), true);
+	});
+
 	it("ends a call normally when it exited but was not polled yet as promotion fires", async () => {
 		const s = session();
 		const call = s.toolCall("bash", { command: "slow-build" });

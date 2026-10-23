@@ -6,6 +6,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - tap-to-background (2026-10-24)
+
+### Added
+- A user message queued while a foreground call runs (`streamingBehavior: "steer"`) promotes every call in flight at once (`pi.on("input")`): the turn frees up so the model can reply, and the promoted call's result explains the move — "You sent a message … reply to the user first". Deliberate waits (`followUp`) do not promote; the handler only eavesdrops (`{action:"continue"}`), the queueing pipeline is untouched. Overrides the sleep guard and inherits any explicit `timeout` deadline, like every promotion path.
+
 ## [0.5.1] - 2026-10-23
 
 ### Changed

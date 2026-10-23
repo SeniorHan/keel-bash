@@ -7,7 +7,7 @@
 // without `background` is Pi's own `bash` over the same wrapper (`foreground.ts`),
 // and moves to the background when it outlasts the call's declared
 // `expectedSeconds`, or the default 30 s with none.
-import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, type ExtensionAPI, type InputEventResult } from "@earendil-works/pi-coding-agent";
 import { type TObject, Type } from "typebox";
 
 import { bgCommand } from "./bg.ts";
@@ -73,6 +73,15 @@ export default function (pi: ExtensionAPI): void {
 			// at once.
 			for (const run of foregroundRuns()) run.promote("shortcut");
 		},
+	});
+	// A message queued while a foreground call runs promotes every call in flight at
+	// once: the turn must free up so the model can answer the user. Only eavesdrop —
+	// "continue" keeps the queueing pipeline untouched; the promoted call's result
+	// explains the move. Deliberate waits (`followUp`) do not promote.
+	pi.on("input", (event): InputEventResult => {
+		if (event.streamingBehavior !== "steer") return { action: "continue" };
+		for (const run of foregroundRuns()) run.promote("userInput");
+		return { action: "continue" };
 	});
 	const builtin = createBashToolDefinition(process.cwd());
 	pi.registerTool({

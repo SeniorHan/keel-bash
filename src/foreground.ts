@@ -51,7 +51,7 @@ export type ForegroundRun = {
 	/** When the command started, in `Date.now()` terms. */
 	startedAt: number;
 	/** Turn the command into a background task and end the call. Does nothing once the call is over. `by` is only for the debug log. */
-	promote(by?: "timer" | "shortcut" | "waitFor"): void;
+	promote(by?: "timer" | "shortcut" | "waitFor" | "userInput"): void;
 };
 
 /** The foreground calls running now, not yet promoted or ended. Kept in the registry so a reloaded copy of this module sees them. */
@@ -106,7 +106,7 @@ type Run = {
 	/** The call's declared expectation in seconds; 0 or absent means the default threshold applies. */
 	expectedSeconds?: number;
 	matched: boolean;
-	by?: "timer" | "shortcut" | "waitFor";
+	by?: "timer" | "shortcut" | "waitFor" | "userInput";
 };
 
 /** The `exec` of one foreground call. `run.task` is set when the command was promoted. */
@@ -272,7 +272,7 @@ function operations(ctx: ExtensionContext, run: Run) {
 					stop(new Error("aborted"));
 				}
 				/** The one promotion path: register the live process as a task and end `exec` so the delegate returns. */
-				function promote(by: "timer" | "shortcut" | "waitFor" = "shortcut") {
+				function promote(by: "timer" | "shortcut" | "waitFor" | "userInput" = "shortcut") {
 					if (done) return;
 					check(); // a command that just ended ends normally
 					if (done || exitCode !== null) return;
@@ -330,6 +330,8 @@ function promotedText(task: Task, run: Run, output: string): string {
 	if (run.matched)
 		head = `"${run.waitFor}" appeared after ${seconds} s; the command keeps running as background task ${task.id}. `;
 	// Told no reason for the move, the model tends to rerun the command or sleep again; say the user meant it.
+	else if (run.by === "userInput")
+		head = `You sent a message while this command was still running after ${seconds} s, so it moved to the background as task ${task.id} to free this turn: reply to the user first; completion is reported automatically. Do not run the command again or start a sleep in its place. `;
 	else if (run.by === "shortcut")
 		head = `The user pressed ctrl+shift+b after ${seconds} s: this command was deliberately moved to the background as task ${task.id}, so you are not blocked on it. Do not run it again or start a sleep in its place. `;
 	return (
