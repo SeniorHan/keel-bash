@@ -23,13 +23,12 @@ import { withTaskTimer } from "./render.ts";
 
 // Telegraphic Chinese per the naming spec's language policy: draft EN and ZH, keep the shorter.
 const EXPECTED_DESCRIPTION =
-	"长任务(构建/部署/服务)设 `background: true`:立即返回 task_id,结束时送达完成通知并开新回合,勿 sleep 或轮询 bash_output 等待。" +
-	"等外部事件(如 CI)时后台一条阻塞命令(如 `gh run watch <run-id> --exit-status`),勿 sleep N 后自查。" +
-	"前台必填 expectedSeconds;`background: true` 时忽略。" +
-	`无 timeout 的前台命令超 expectedSeconds(无预期则 ${defaultPromoteMs() / 1000} s,sleep 开头除外)自动转后台,完成照常通知。` +
-	"勿仅为记录预期设 timeout。" +
-	"timeout 是硬杀线:到点杀进程;仅当 expectedSeconds 更早才提前转后台,task 保留该 deadline。" +
-	"waitFor 命中即返回已有输出,命令转后台任务继续运行,此时 timeout 限制 task。";
+	"长任务(构建/部署/服务)设 `background: true`:立即返回 task_id,完成即通知并开新回合,勿 sleep 或轮询 bash_output 等待。" +
+	"等外部事件(如 CI):后台跑阻塞命令(如 `gh run watch <run-id> --exit-status`),勿 sleep N 后自查。" +
+	"前台必填 expectedSeconds,后台忽略。" +
+	`无 timeout 前台命令超 expectedSeconds(无预期则 ${defaultPromoteMs() / 1000} s,sleep 开头除外)自动转后台。` +
+	"timeout 是硬杀线:到点杀进程,勿仅为记录预期而设;仅 expectedSeconds 更早才提前转后台,task 保留该 deadline。" +
+	"waitFor 命中即返回已有输出,命令转后台续跑,timeout 转而限制 task。";
 
 // No guard for a Pi without `outputSchema`, unlike bash's: these schemas stand alone,
 // and such a Pi ignores the unknown fields.
@@ -83,9 +82,7 @@ export default function (pi: ExtensionAPI): void {
 			...builtin.parameters.properties,
 			expectedSeconds: Type.Optional(Type.Number({ description: "预计耗时,秒;0=无预期" })),
 			waitFor: Type.Optional(Type.String({ description: '输出中等待出现的文本,如 "listening on"' })),
-			background: Type.Optional(
-				Type.Boolean({ description: "Run the command as a detached background task and return its id" }),
-			),
+			background: Type.Optional(Type.Boolean({ description: "分离后台运行命令,返回 task_id" })),
 		}),
 		// A Pi whose bash has no output schema returns no structured result to extend.
 		outputSchema:
@@ -139,9 +136,9 @@ export default function (pi: ExtensionAPI): void {
 			"从上次停点起读取后台任务输出,上限同 `bash`。每次调用只返回尚未读取的输出,并注明剩余量;结果同时说明任务在运行或已结束。" +
 			"勿为等待任务结束而反复调用:完成会自动送达。",
 		parameters: Type.Object({
-			id: Type.String({ description: "The task id returned by a background bash call" }),
-			latest: Type.Optional(Type.Boolean({ description: "Skip to the end of the log and return the newest output" })),
-			filter: Type.Optional(Type.String({ description: "Regex; return only the matching lines of the output read" })),
+			id: Type.String({ description: "后台调用返回的 task_id" }),
+			latest: Type.Optional(Type.Boolean({ description: "跳至日志末尾取最新输出" })),
+			filter: Type.Optional(Type.String({ description: "正则;仅返回已读输出的匹配行" })),
 		}),
 		outputSchema: Type.Object({
 			...STATE_FIELDS,
@@ -180,11 +177,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "bash_kill",
 		label: "bash_kill",
-		description:
-			"Stop a background bash task and everything it started: SIGTERM to its process group, then SIGKILL " +
-			`after about ${GRACE_MS / 1000} s if anything is left. No completion message follows; the result reports the final state.`,
+		description: `杀后台任务及其子进程:进程组先 SIGTERM,约 ${GRACE_MS / 1000} s 后残留则 SIGKILL。无完成消息,结果报最终状态。`,
 		parameters: Type.Object({
-			id: Type.String({ description: "The task id returned by a background bash call" }),
+			id: Type.String({ description: "后台调用返回的 task_id" }),
 		}),
 		outputSchema: Type.Object({
 			...TASK_FIELDS,
