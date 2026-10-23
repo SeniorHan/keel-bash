@@ -6,6 +6,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-23
+
+### Changed
+- ZH descriptions for bash_kill/bash_tasks and bash params (id/waitFor/background); EXPECTED_DESCRIPTION trimmed
+
 ## [0.5.0] - 2026-10-22
 
 ### Added
