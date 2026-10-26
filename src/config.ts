@@ -26,6 +26,32 @@ function fileMs(path: string): number | undefined {
 	}
 }
 
+/** The `guaranteedWake` of one config file, or undefined when it has none: only a boolean counts. */
+function fileWake(path: string): boolean | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as { guaranteedWake?: unknown };
+		return typeof parsed?.guaranteedWake === "boolean" ? parsed.guaranteedWake : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+let cachedWake: boolean | undefined;
+
+/**
+ * Whether a notice that did not land may be sent as a user message, the one
+ * channel that always starts a turn. On unless a config file says otherwise:
+ * `PI_BG_BASH_GUARANTEED_WAKE=0` wins over the files, which beat the default.
+ */
+export function guaranteedWake(): boolean {
+	const env = process.env.PI_BG_BASH_GUARANTEED_WAKE;
+	if (env === "0") return false;
+	if (env === "1") return true;
+	if (cachedWake === undefined) cachedWake = CONFIG_FILES.map(fileWake).find((wake) => wake !== undefined) ?? true;
+	return cachedWake;
+}
+
 let cachedFiles: number | undefined;
 
 /** The configured default threshold in milliseconds; the env var wins (read every call, the contract test sets it after load), then project, then user, then the built-in default. */

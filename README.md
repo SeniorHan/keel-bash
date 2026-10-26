@@ -132,7 +132,7 @@ The rest of this README describes the behaviour in detail.
   OS has reused can keep a dead owner's directory out of reach for one session
   start, but the next start re-checks and removes it once the pid is gone. Ids restart
   at `bg-1` per Pi process, so a resumed session skips any id whose `.log` or
-  `.log.gz` already exists. Once a task's completion message has been sent, the
+  `.log.gz` already exists. Once a task's completion message is confirmed in the transcript, the
   log is streamed through `node:zlib` to `<id>.log.gz` (0600) and the plain file
   is deleted; `bash_output` and the completion tail read it transparently. A
   task is killed, with the message `killed (log limit passed)` and a
@@ -154,20 +154,40 @@ The rest of this README describes the behaviour in detail.
   hides a real exit. One task's failure, a stale footer context or a throwing
   `sendMessage` never stops the poller; a message that failed to send is
   retried on a later tick. A task is registered only after its spawn resolves.
-- **Completion message:** one `pi.sendMessage` custom message per task,
-  `deliverAs: "steer"`, `triggerTurn: true`, with the id, the command (on
-  one line, newlines shown as ` ⏎ `, cut to 200 characters), exit state
+- **Completion message:** a custom message (`pi.sendMessage`) carrying the id,
+  the command (on one line, newlines shown as ` ⏎ `, cut to 200 characters), exit state
   (`exited (code N)`, `killed (timed out)`, `killed (killed by user)`,
   `killed (log limit passed)`, or `exit unknown`, the same wording as
   `bash_tasks`), runtime and the last 20 lines of output, capped at 4 KiB.
   When the cap cut the output, its label says so and names `bash_output <id>`,
   which reads the whole log since the completion message never moves the read
-  position. A busy agent gets the message when its current turn ends, before
-  its next model request; one that ends while the agent writes its final
-  answer still arrives after it. A
-  `followUp` would be held until the agent stopped, so every task that ended
-  during a run would arrive after its final answer, one turn each, and a
-  delegate's reply would become its answer to the last of them.
+  position. A command that pipes its output and exits 0 also says that the code
+  is the last stage's and quotes the first line of the log that reads as a
+  failure, since `cmd | tail` hides the command's own exit code.
+- **Delivery is a transaction, not a send.** The notice is written to
+  `<state>/<session>/pending/<id>.json` before it is sent, and that record is
+  deleted only once the transcript holds it: the message is considered delivered
+  when an entry carries its `Background task <id> finished:` phrase (in the
+  session's entries first, then in the tail of the session file). Until then it
+  is retried, so a send that Pi accepts and silently drops — a steer queued as
+  the turn ends, a settle-window deferral, a run that would not start — cannot
+  lose a notice. The first retry 2 s later goes out as a user message
+  (`sendUserMessage`, the one channel that always starts a turn); after that the
+  user channel is retried with backoff (8 s, 30 s, 1 min, then every 2 min).
+  Notices that end together share one message and one wake. Records a session
+  leaves behind (a crash, a switch, Pi exiting) are replayed as user messages on
+  the next `session_start`; records of a session that ends normally are dropped,
+  so nothing leaks into the session that follows. A send that *throws* is
+  retried on the same channel rather than escalated: a Pi that is not ready is
+  not a message lost.
+- **`guaranteedWake`:** `guaranteedWake` in the project's
+  `.pi/pi-bg-bash.json`, then the user's `~/.pi/pi-bg-bash.json`, then
+  `PI_BG_BASH_GUARANTEED_WAKE` (`1`/`0`), then on; `false` keeps delivery on the
+  custom channel only, so a notice then waits for the next turn instead of
+  starting one.
+- **Nothing is reported as undelivered:** from the agent's side a task is
+  finished or it is not; a notice still pending is the plugin's bookkeeping, not
+  a state of the task, and never appears in `bash_tasks` or `bash_output`.
 - **Footer:** `ctx.ui.setStatus("bg", "bg: N")` while N tasks run.
 - A call without `background` is a foreground call; see below.
 - **Stripped output:** what the agent reads (the foreground result, `bash_output`
@@ -358,7 +378,7 @@ is open-world.
 - `bash_tasks()`: one line per task, `id | state | runtime | command`. State is
   `running`, `exited (code N)`, `killed (reason)` or `exit unknown`. Says "No
   background tasks." when there are none.
-- `bash_kill({ id })`: kills as above, sets `notified` so no completion message
+- `bash_kill({ id })`: kills as above, reports no completion message
   follows, and reports the final state. An unknown id throws; a task that
   already ended (even if the poller had not yet noticed) is reported as
   already finished; a "running" task whose group is already gone is settled as

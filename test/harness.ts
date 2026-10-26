@@ -57,6 +57,8 @@ type Tool = {
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type Command = { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void };
 type Sent = { message: { customType: string; content: string; display?: boolean }; options: unknown };
+/** One user message sent with `sendUserMessage`: the channel that always starts a turn. */
+type SentUser = { content: string; options: unknown };
 type CustomFactory = (
 	tui: unknown,
 	theme: unknown,
@@ -78,6 +80,9 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 	const handlers: Record<string, Handler[]> = {};
 	const commands: Record<string, Command> = {};
 	const sent: Sent[] = [];
+	const sentUser: SentUser[] = [];
+	/** The session the extension reads back: what a sent message leaves behind, unless a fault drops it. */
+	const entries: unknown[] = [];
 	const statuses: { key: string; text: string | undefined }[] = [];
 	const widgets: { key: string; content: string[] | undefined; placement: string | undefined }[] = [];
 	const shortcuts: Record<string, { description?: string; handler: (ctx: unknown) => unknown }> = {};
@@ -100,8 +105,18 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		/** Count of `tui.requestRender()` calls, to show a closed component stopped refreshing. */
 		renderRequests: 0,
 	};
-	/** Switches for a stale context: `sendMessage`, `setStatus` or the UI getters throwing. */
-	const faults = { failSend: false, failFooter: false, staleUI: false, sendAttempts: 0 };
+	/** Switches for a stale context or a message that never lands: `sendMessage`, `sendUserMessage`, `setStatus` or the UI getters throwing, or a send dropped without a trace the way pi drops one. */
+	const faults = {
+		failSend: false,
+		failFooter: false,
+		staleUI: false,
+		sendAttempts: 0,
+		userAttempts: 0,
+		/** `sendMessage` accepted and dropped silently (pi's fire-and-forget path losing the message). */
+		dropCustom: false,
+		/** `sendUserMessage` accepted and dropped silently. */
+		dropUser: false,
+	};
 	const pi = {
 		on: (name: string, handler: Handler) => (handlers[name] ??= []).push(handler),
 		registerCommand: (name: string, command: Command) => {
@@ -116,7 +131,16 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		sendMessage: (message: Sent["message"], opts: unknown) => {
 			faults.sendAttempts++;
 			if (faults.failSend) throw new Error("Extension runtime not initialized");
+			if (faults.dropCustom) return;
 			sent.push({ message, options: opts });
+			entries.push({ type: "message", role: "custom", customType: message.customType, content: message.content });
+		},
+		sendUserMessage: (content: string, opts: unknown) => {
+			faults.userAttempts++;
+			if (faults.failSend) throw new Error("Extension runtime not initialized");
+			if (faults.dropUser) return;
+			sentUser.push({ content, options: opts });
+			entries.push({ type: "message", role: "user", content: [{ type: "text", text: content }] });
 		},
 	};
 	const ui = {
@@ -177,7 +201,11 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		},
 		model: { provider: "test-provider", id: "test-model" } as { provider: string; id: string } | undefined,
 		thinkingLevel: "high" as string | undefined,
-		sessionManager: { getSessionId: () => id, getSessionFile: () => join(root, "sessions", `${id}.jsonl`) },
+		sessionManager: {
+			getSessionId: () => id,
+			getSessionFile: () => join(root, "sessions", `${id}.jsonl`),
+			getEntries: () => entries,
+		},
 		get ui() {
 			if (faults.staleUI) throw new Error("This extension ctx is stale");
 			return ui;
@@ -203,6 +231,9 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		/** The context Pi passes to tools, for calling another tool the same way. */
 		ctx,
 		sent,
+		sentUser,
+		/** The transcript the extension reads back, for a test that writes to it directly. */
+		entries,
 		statuses,
 		widgets,
 		shortcuts,
@@ -482,6 +513,7 @@ export function resetRegistry(): void {
 	// The port maps ESRCH and the macOS zombie-only-group EPERM to "gone".
 	for (const task of registry.tasks.values()) processPort().signalGroup(task.pid, "SIGKILL");
 	registry.tasks.clear();
+	registry.notices.clear();
 	registry.groups.clear();
 	registry.emptyGroups.clear();
 	registry.launching.clear();

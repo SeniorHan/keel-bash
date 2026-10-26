@@ -7,14 +7,18 @@
 // without `background` is Pi's own `bash` over the same wrapper (`foreground.ts`),
 // and moves to the background when it outlasts the call's declared
 // `expectedSeconds`, or the default 30 s with none.
+import { join } from "node:path";
+
 import { createBashToolDefinition, type ExtensionAPI, type InputEventResult } from "@earendil-works/pi-coding-agent";
 import { type TObject, Type } from "typebox";
 
 import { bgCommand } from "./bg.ts";
 import { defaultPromoteMs } from "./config.ts";
 import { rotateDebugLog } from "./debug.ts";
+import { replayNotices } from "./delivery.ts";
 import { COMPLETION_TEXT, foregroundRuns, runForeground } from "./foreground.ts";
 import { GRACE_MS } from "./kill.ts";
+import { stateRoot } from "./launch.ts";
 import { cleanupOldLogs } from "./logs.ts";
 import { stateText, taskData, taskLine } from "./notify.ts";
 import { readOutput } from "./output.ts";
@@ -243,6 +247,9 @@ export default function (pi: ExtensionAPI): void {
 		setContext(ctx);
 		rotateDebugLog();
 		cleanupOldLogs(getRegistry().tasks.values());
+		// A notice an earlier run of this session left pending is reported now:
+		// nothing else will wake the agent for it.
+		replayNotices(getRegistry(), join(stateRoot(), ctx.sessionManager.getSessionId()));
 	});
 	// Tasks belong to the session: a reload keeps them (the new load takes them over), every other end kills them.
 	pi.on("session_shutdown", async (event) => {

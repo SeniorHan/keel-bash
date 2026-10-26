@@ -76,8 +76,9 @@ describe("bash with background: true", () => {
 		const long = await start(s, `echo ${"x".repeat(300)}`);
 		procs.of(multi).exit(0);
 		procs.of(long).exit(0);
-		await clock.until(() => s.sent.length > 1);
-		const contents = s.sent.map((m) => m.message.content);
+		await clock.until(() => s.sent.length > 0);
+		// Both tasks ended in the same poll: one message, so one wake covers both.
+		const contents = [s.sent.map((m) => m.message.content).join("\n\n")];
 		assert.ok(contents.some((c) => c.includes("\nCommand: echo a ⏎ echo b\n")));
 		const cut = `echo ${"x".repeat(300)}`.slice(0, 200);
 		assert.ok(contents.some((c) => c.includes(`\nCommand: ${cut}…\n`)));

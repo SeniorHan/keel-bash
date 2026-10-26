@@ -110,7 +110,7 @@ for (const reason of ["quit", "new", "resume", "fork"] as const) {
 			const clean = await start(s, "true");
 			procs.of(leaves).exit(0, { child: true });
 			procs.of(clean).exit(0);
-			await clock.until(() => s.sent.length === 2);
+			await clock.until(() => s.sent.length === 1); // one message: both ended in the same poll
 			const [left, empty] = [procs.of(leaves), procs.of(clean)];
 			await clock.settle(s.shutdown(reason));
 			assert.equal(left.signals[0], "SIGTERM");

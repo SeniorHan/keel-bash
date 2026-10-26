@@ -9,12 +9,12 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { debug, debugError, exitFields, taskFields } from "./debug.ts";
+import { clearNotices, deliverNotices, type Notice, reportEnd, suppressNotice } from "./delivery.ts";
 import type { ForegroundRun } from "./foreground.ts";
 import { killGroup, killGroupNow } from "./kill.ts";
 import { type LaunchOptions, sessionLogDir } from "./launch.ts";
-import { appendLimitMarker, gzipLog, overLogLimit } from "./logs.ts";
+import { appendLimitMarker, overLogLimit } from "./logs.ts";
 import { locateMarker, type Marker } from "./logview.ts";
-import { sendCompletion } from "./notify.ts";
 import { processPort } from "./port.ts";
 
 const KEY = Symbol.for("pi-bg-bash.registry");
@@ -63,15 +63,20 @@ export type Task = {
 	clearing?: Promise<Leftovers>;
 	/** Where `bash_output` will next read; the completion tail never moves it. */
 	readPosition: number;
-	notified: boolean;
+	/** Whether the task's end has been turned into a notice; the notice itself lives in `registry.notices` until the transcript holds it. */
+	reported: boolean;
 	/** Consecutive polls that failed to read the log for a reason other than it being missing. */
 	readFailures: number;
 	/** The `bash` call that started the task or was moved into it, whose row shows its timer. */
 	toolCallId?: string;
 };
 
-type Registry = {
+export type Registry = {
 	tasks: Map<string, Task>;
+	/** Completion notices not yet seen in the transcript, by task id. */
+	notices: Map<string, Notice>;
+	/** Keeps the poller alive while a notice is still pending, however it was made. */
+	ensurePolling?: () => void;
 	nextId: number;
 	pi?: ExtensionAPI;
 	ctx?: ExtensionContext;
@@ -96,13 +101,16 @@ export function getRegistry(): Registry {
 	const holder = globalThis as unknown as Record<symbol, Registry | undefined>;
 	const registry = (holder[KEY] ??= {
 		tasks: new Map(),
+		notices: new Map(),
 		nextId: 1,
 		groups: new Set(),
 		emptyGroups: new Set(),
 		launching: new Set(),
 		foreground: new Set(),
-	});
+	} as Registry);
 	// A registry left by an older copy of the extension may lack later fields.
+	registry.notices ??= new Map();
+	registry.ensurePolling = () => startPollerIfNeeded(registry);
 	registry.groups ??= new Set();
 	registry.emptyGroups ??= new Set();
 	registry.launching ??= new Set();
@@ -146,8 +154,10 @@ export async function endSession(): Promise<void> {
 	while (registry.launching.size > 0) await Promise.all([...registry.launching]);
 	const tasks = [...registry.tasks.values()];
 	// No completion may leak into the next session from a kill still in flight
-	// (a /bg pick or a deadline kill), so mark every task reported before clearing.
-	for (const task of tasks) task.notified = true;
+	// (a /bg pick or a deadline kill), and no notice left behind may be replayed
+	// into it: mark every task reported and drop the records on disk.
+	for (const task of tasks) task.reported = true;
+	clearNotices(registry);
 	const pids = new Set(
 		[...registry.groups, ...tasks.map((task) => task.pid)].filter((pid) => !registry.emptyGroups.has(pid)),
 	);
@@ -226,7 +236,7 @@ export function makeTask(
 		deadline: launched.timeout !== undefined && launched.timeout > 0 ? startedAt + launched.timeout * 1000 : undefined,
 		state: "running",
 		readPosition: 0,
-		notified: false,
+		reported: false,
 		readFailures: 0,
 	};
 }
@@ -304,9 +314,9 @@ function checkLogLimits(registry: Registry): void {
 	if (runningCount(registry) === 0) stopLimitTimer(registry);
 }
 
-/** A task the poller still has work for: running, or ended and not yet reported. */
+/** A task the poller still has work for: running, or ended with a notice the transcript has not shown yet. */
 function hasPending(registry: Registry): boolean {
-	return [...registry.tasks.values()].some((task) => task.state === "running" || !task.notified);
+	return registry.notices.size > 0 || [...registry.tasks.values()].some((task) => task.state === "running");
 }
 
 /** Settle a running task if its marker appeared or its pid is gone. Updates the footer; never reports. */
@@ -361,9 +371,8 @@ function pollTask(registry: Registry, task: Task): void {
 		}
 		return;
 	}
-	notifyOnce(registry, task);
+	reportEnd(registry, task);
 }
-
 /**
  * Stop a task's process group and record why. Resolves `finished` when the task had
  * already ended and left nothing (a marker the poller had not yet seen counts),
@@ -383,7 +392,10 @@ export async function killTask(
 	if (task.killing === undefined) {
 		refresh(registry, task);
 		if (task.state !== "running") {
-			if (!options.notify) task.notified = true;
+			if (!options.notify) {
+				task.reported = true;
+				suppressNotice(registry, task.id);
+			}
 			// An ended task's command may have left processes in its group.
 			task.clearing ??= stopLeftovers(task).finally(() => {
 				task.clearing = undefined;
@@ -399,7 +411,10 @@ export async function killTask(
 		};
 		stopping.then(clear, clear);
 	}
-	if (!options.notify) task.notified = true;
+	if (!options.notify) {
+		task.reported = true;
+		suppressNotice(registry, task.id);
+	}
 	return task.killing;
 }
 
@@ -432,14 +447,7 @@ async function stopGroup(
 	}
 	updateFooter(registry);
 	debug("kill", { ...exitFields(task), reason, outcome: how });
-	if (notify) {
-		try {
-			notifyOnce(registry, task);
-		} catch (error) {
-			debugError("notify", error, taskFields(task));
-			// a later tick retries the message
-		}
-	}
+	if (notify) reportEnd(registry, task);
 	return how === "stopped" ? "killed" : how;
 }
 
@@ -483,12 +491,7 @@ async function killForLogLimit(registry: Registry, task: Task): Promise<"killed"
 		if (how !== "stuck") registry.emptyGroups.add(task.pid);
 		updateFooter(registry);
 		debug("kill", { ...exitFields(task), reason: "log limit passed", outcome: how });
-		try {
-			notifyOnce(registry, task);
-		} catch (error) {
-			debugError("notify", error, taskFields(task));
-			// a later tick retries the message
-		}
+		reportEnd(registry, task);
 		return how === "gone" ? "gone" : how === "stuck" ? "stuck" : "killed";
 	})();
 	task.killing = stopping;
@@ -509,22 +512,11 @@ function poll(registry: Registry): void {
 			// try again next tick
 		}
 	}
-	if (!hasPending(registry)) stopTimers(registry);
-}
-
-/** Report the task's end once: the flag is set before the send, and reset when the send throws so a later tick retries. The log is gzipped only after the message really went out (Q21); a gzip failure leaves the plain log and must not resend the message. */
-function notifyOnce(registry: Registry, task: Task): void {
-	if (task.notified || registry.pi === undefined) return;
-	task.notified = true;
 	try {
-		sendCompletion(registry.pi, task);
+		deliverNotices(registry);
 	} catch (error) {
-		task.notified = false;
-		throw error;
+		debugError("deliver", error);
+		// the notices stay pending: try again next tick
 	}
-	// Gzip only after the message is out (Q21). A group that is still alive (a
-	// `stuck` group, or a child the command left) may still write to the log, so
-	// leave it plain; the 7-day cleanup handles it.
-	if (!processPort().groupAlive(task.pid))
-		void gzipLog(task).catch((error) => debugError("gzip", error, taskFields(task)));
+	if (!hasPending(registry)) stopTimers(registry);
 }
