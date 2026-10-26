@@ -1,6 +1,4 @@
 // The completion message: what the agent hears when a task ends.
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
 import { debugError } from "./debug.ts";
 import { openView } from "./logview.ts";
 import type { KillReason, Task, TaskState } from "./registry.ts";
@@ -109,28 +107,62 @@ export function oneLine(command: string): string {
 	return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
 
-/** The completion text: id, command, state, runtime and the output's last lines. */
+/**
+ * The line every notice opens with. Both materials of a notice keep it word for
+ * word, because delivery's only proof is finding it in the transcript.
+ */
+export function noticePhrase(id: string): string {
+	return `Background task ${id} finished:`;
+}
+
+/**
+ * Whether the command sends its output through `|`, and so exits with the last
+ * stage's code rather than its own: `false` only for a command with no pipe.
+ * Quoted text is dropped first, so `grep "a|b"` is not a pipe.
+ */
+export function pipesOutput(command: string): boolean {
+	return /\|/.test(command.replace(/'[^']*'|"[^"]*"/g, "").replace(/\|\|/g, ""));
+}
+
+/** A line that reads as a failure, for a notice whose exit code cannot be trusted. */
+const ERROR_LINE = /^(?:\[ERROR\]|ERROR\b|COMPILATION ERROR|BUILD FAILURE|npm ERR!|Error:|error:|FAIL(?:ED|URE)?\b|✗)/;
+
+/** The first line of the log that reads as a failure, cut to 200 characters, or `undefined` when none does. */
+export function firstErrorLine(tail: string): string | undefined {
+	for (const line of tail.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed !== "" && ERROR_LINE.test(trimmed)) return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
+	}
+	return undefined;
+}
+
+/**
+ * The completion text: id, command, state, runtime and the output's last lines.
+ * A command that pipes its output reports the last stage's exit code, so a
+ * `code 0` from a pipeline says nothing about the command: the notice says so,
+ * and quotes the first line that reads as a failure.
+ */
 export function completionText(task: Task): string {
 	const { text: tail, cut } = logTail(task);
 	const label = cut
 		? `Last output, cut to the last ${TAIL_LINES} lines or ${TAIL_BYTES / 1024} KiB; \`bash_output ${task.id}\` reads it all:`
 		: "Last output:";
-	return [
-		`Background task ${task.id} finished: ${stateText(task)}, ran ${runtimeText(task)}.`,
+	const piped = pipesOutput(task.command) && task.state === "exited" && task.exitCode === 0;
+	const error = piped ? firstErrorLine(tail) : undefined;
+	const lines = [
+		`${noticePhrase(task.id)} ${stateText(task)}, ran ${runtimeText(task)}.`,
 		`Command: ${oneLine(task.command)}`,
-		tail === "" ? "(no output)" : `${label}\n${tail}`,
-	].join("\n");
+	];
+	if (piped)
+		lines.push(
+			"Note: the command pipes its output, so `exited (code 0)` is the last stage's and the command itself may have failed.",
+		);
+	if (error !== undefined) lines.push(`First error line in the log: ${error}`);
+	lines.push(tail === "" ? "(no output)" : `${label}\n${tail}`);
+	return lines.join("\n");
 }
 
-/** Send the completion as a steering message, which a busy agent gets when its current turn ends, and which starts a turn when the agent is idle. */
-export function sendCompletion(pi: ExtensionAPI, task: Task): void {
-	pi.sendMessage(
-		{
-			customType: MESSAGE_TYPE,
-			content: completionText(task),
-			display: true,
-			details: { id: task.id, exitCode: task.exitCode, state: task.state },
-		},
-		{ deliverAs: "steer", triggerTurn: true },
-	);
+/** The same notice as one line, for a user message: it starts a turn, so it must stay short. */
+export function noticeLine(task: Task): string {
+	return `${noticePhrase(task.id)} ${stateText(task)}, ran ${runtimeText(task)}. The full output is in \`bash_output ${task.id}\`.`;
 }

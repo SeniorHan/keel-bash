@@ -6,6 +6,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - reliable delivery (2026-10-26)
+
+### Fixed
+- A completion notice could be lost without a trace: Pi accepts
+  `sendMessage` fire-and-forget and may drop it silently (a steer queued as the
+  turn ends, a settle-window deferral, a run that would not start), and the
+  task was already marked as reported, so nothing ever retried. Delivery is now
+  a transaction: the notice is written to `<state>/<session>/pending/<id>.json`
+  before the send and the record is deleted only once the transcript holds the
+  message's `Background task <id> finished:` phrase. Until then it is retried —
+  the custom channel first, then `sendUserMessage`, which always starts a turn
+  (backoff 8 s, 30 s, 1 min, every 2 min) — and records a session leaves behind
+  are replayed on the next `session_start`. A send that throws is retried on the
+  same channel instead of escalating: a Pi that is not ready is not a lost
+  message. Notices that end together share one message and one wake. Nothing
+  surfaces an "undelivered" state: from the agent's side a task is finished or
+  it is not.
+- `bash_kill` sets the new `reported` flag instead of `notified`, so a killed
+  task's notice is suppressed rather than pre-marked as delivered.
+
+### Added
+- `guaranteedWake` (project `.pi/pi-bg-bash.json`, then `~/.pi/pi-bg-bash.json`,
+  then `PI_BG_BASH_GUARANTEED_WAKE`, then on): turns the user-channel fallback
+  off, leaving a notice on the custom channel until the next turn.
+- A piped command that exits 0 says its code is the last stage's and quotes the
+  first line of the log that reads as a failure (`cmd 2>&1 | tail -30` hides the
+  command's own exit code behind `tail`'s).
+
+### Changed
+- The log is gzipped once the notice is confirmed in the transcript, not when
+  `sendMessage` returns.
+
 ## [0.6.0] - tap-to-background (2026-10-24)
 
 ### Added
