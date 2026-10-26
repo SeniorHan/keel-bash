@@ -152,7 +152,7 @@ export function deliverNotices(registry: Registry): void {
 	}
 	if (pi === undefined || ctx === undefined) return;
 	if (toCustom.length > 0) sendCustom(pi, toCustom);
-	if (toUser.length > 0) sendUser(pi, toUser);
+	if (toUser.length > 0) sendUser(registry, toUser);
 }
 
 /**
@@ -258,11 +258,21 @@ function sendCustom(pi: ExtensionAPI, notices: Notice[]): void {
 	}
 }
 
-/** One user message carrying every escalated notice due now: it always starts a turn. */
-function sendUser(pi: ExtensionAPI, notices: Notice[]): void {
+/**
+ * One user message carrying every escalated notice due now. Idle, that alone starts
+ * a turn; while the agent is still running, `sendUserMessage` without a
+ * `deliverAs` throws (`Agent is already processing…`) inside pi's fire-and-forget
+ * wrapper, so the message is steered instead: it lands at the next turn boundary,
+ * which is exactly the turn this notice was waiting for.
+ */
+function sendUser(registry: Registry, notices: Notice[]): void {
+	const pi = registry.pi;
+	if (pi === undefined) return;
 	let threw = false;
 	try {
-		pi.sendUserMessage(notices.map((notice) => notice.line).join(" "));
+		const text = notices.map((notice) => notice.line).join(" ");
+		if (registry.ctx?.isIdle() === false) pi.sendUserMessage(text, { deliverAs: "steer" });
+		else pi.sendUserMessage(text);
 	} catch (error) {
 		threw = true;
 		debugError("notice-wake", error, { ids: notices.map((notice) => notice.id) });

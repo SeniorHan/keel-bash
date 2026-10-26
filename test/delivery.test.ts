@@ -95,6 +95,18 @@ describe("a notice pi drops silently", () => {
 		assert.deepEqual(pendingFiles(s.logDir()), []);
 	});
 
+	it("steers the escalated notice while the agent is still running, instead of throwing", async () => {
+		const s = session();
+		s.faults.dropCustom = true; // the drop that happens as a turn ends
+		s.faults.streaming = true; // and the run is still active when the retry comes
+		const id = await start(s, "echo done");
+		procs.of(id).exit(0);
+		await clock.until(() => s.sentUser.length > 0);
+		assert.deepEqual(s.sentUser[0].options, { deliverAs: "steer" });
+		s.faults.streaming = false;
+		await clock.until(() => gzipped(s, id));
+	});
+
 	it("never escalates while the custom send throws: a pi that is not ready is not a dropped message", async () => {
 		const s = session();
 		s.faults.failSend = true;

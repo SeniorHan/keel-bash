@@ -116,6 +116,8 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		dropCustom: false,
 		/** `sendUserMessage` accepted and dropped silently. */
 		dropUser: false,
+		/** The agent is mid-run, as pi's `isStreaming` sees it. */
+		streaming: false,
 	};
 	const pi = {
 		on: (name: string, handler: Handler) => (handlers[name] ??= []).push(handler),
@@ -135,9 +137,15 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 			sent.push({ message, options: opts });
 			entries.push({ type: "message", role: "custom", customType: message.customType, content: message.content });
 		},
-		sendUserMessage: (content: string, opts: unknown) => {
+		sendUserMessage: (content: string, opts: { deliverAs?: string } | undefined) => {
 			faults.userAttempts++;
 			if (faults.failSend) throw new Error("Extension runtime not initialized");
+			// pi's own guard: a user message without `deliverAs` cannot start a run that
+			// is already running, so it throws before anything is queued.
+			if (faults.streaming && opts?.deliverAs === undefined)
+				throw new Error(
+					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
 			if (faults.dropUser) return;
 			sentUser.push({ content, options: opts });
 			entries.push({ type: "message", role: "user", content: [{ type: "text", text: content }] });
@@ -201,6 +209,8 @@ export function session(options: { id?: string; hasUI?: boolean } = {}) {
 		},
 		model: { provider: "test-provider", id: "test-model" } as { provider: string; id: string } | undefined,
 		thinkingLevel: "high" as string | undefined,
+		isIdle: () => !faults.streaming,
+		hasPendingMessages: () => false,
 		sessionManager: {
 			getSessionId: () => id,
 			getSessionFile: () => join(root, "sessions", `${id}.jsonl`),

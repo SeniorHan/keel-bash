@@ -6,6 +6,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - steer a wake the agent cannot start (2026-10-26)
+
+### Fixed
+- An escalated notice called `pi.sendUserMessage` with no `deliverAs` while the
+  agent was still running, which pi rejects inside its fire-and-forget wrapper
+  (`Agent is already processing. Specify streamingBehavior …`) — so the wake
+  failed, the extension saw nothing, and the TUI showed an `Extension "<runtime>"`
+  error line on every attempt. The notice now steers when the agent is busy,
+  which lands it at the next turn boundary, and only asks for a new turn when
+  the agent is idle.
+- `test/harness.ts` models that guard, so a wake that cannot start a run fails
+  the test instead of passing silently: `faults.streaming` and `ctx.isIdle()`.
+
 ## [0.7.0] - reliable delivery (2026-10-26)
 
 ### Fixed
